@@ -16,6 +16,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const viewToggle = document.getElementById('view-toggle');
     const toggleLabelText = document.getElementById('toggle-label-text');
     const exportBtn = document.getElementById('export-btn');
+    
+    const excelUpload = document.getElementById('excel-upload');
+    const gstinTextarea = document.getElementById('gstin-list');
 
     // Global store
     let allRecords = [];
@@ -24,15 +27,59 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Standard Indian Financial Year Months
     const FY_MONTHS = ['April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December', 'January', 'February', 'March'];
-    // Fallback sort for unknown months
     const monthRank = (m) => {
         let idx = FY_MONTHS.indexOf(m);
         return idx === -1 ? 999 : idx;
     };
 
+    // Handle Excel parsing
+    excelUpload.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = function(evt) {
+            try {
+                const data = evt.target.result;
+                const workbook = XLSX.read(data, { type: 'binary' });
+                
+                let extractedGstins = new Set();
+                const gstinRegex = /[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}/i;
+
+                workbook.SheetNames.forEach(sheetName => {
+                    const ws = workbook.Sheets[sheetName];
+                    const json = XLSX.utils.sheet_to_json(ws, { header: 1 });
+                    
+                    json.forEach(row => {
+                        row.forEach(cell => {
+                            if (cell && typeof cell === 'string') {
+                                const match = cell.match(gstinRegex);
+                                if (match) {
+                                    extractedGstins.add(match[0].toUpperCase());
+                                }
+                            }
+                        });
+                    });
+                });
+
+                if (extractedGstins.size > 0) {
+                    const existing = gstinTextarea.value ? gstinTextarea.value.trim() : '';
+                    const combined = new Set([...existing.split(/[\n,]+/).map(i => i.trim()).filter(Boolean), ...Array.from(extractedGstins)]);
+                    gstinTextarea.value = Array.from(combined).join('\n');
+                    alert(`Successfully extracted ${extractedGstins.size} GSTIN(s) from the file!`);
+                } else {
+                    alert('No valid GSTINs found in the uploaded file.');
+                }
+            } catch (err) {
+                alert('Error parsing file: ' + err.message);
+            }
+        };
+        reader.readAsBinaryString(file);
+    });
+
     form.addEventListener('submit', async (e) => {
         e.preventDefault();
-        const gstinInputText = document.getElementById('gstin-list').value;
+        const gstinInputText = gstinTextarea.value;
         const fy = document.getElementById('fy').value.trim();
         const gstins = gstinInputText.split(/[\n,]+/).map(id => id.trim()).filter(id => id.length > 0);
 
@@ -50,8 +97,10 @@ document.addEventListener('DOMContentLoaded', () => {
         startSearch(gstins.length);
 
         let completed = 0;
+        const CONCURRENCY_LIMIT = 10; // Multithreaded-like worker pool limit
 
-        await Promise.all(gstins.map(async (gstin) => {
+        // Worker function
+        const processGstin = async (gstin) => {
             try {
                 const response = await fetch('/api/search', {
                     method: 'POST',
@@ -91,9 +140,31 @@ document.addEventListener('DOMContentLoaded', () => {
                 completed++;
                 progressText.textContent = `${completed} / ${gstins.length} Completed`;
                 updateFilterDropdowns();
-                renderTable(); // Update live
+                renderTable();
             }
-        }));
+        };
+
+        // Async Concurrency Pool Execution
+        let activePromises = 0;
+        let index = 0;
+
+        await new Promise((resolve) => {
+            function processNext() {
+                if (index >= gstins.length && activePromises === 0) {
+                    resolve();
+                    return;
+                }
+                while (activePromises < CONCURRENCY_LIMIT && index < gstins.length) {
+                    const gstin = gstins[index++];
+                    activePromises++;
+                    processGstin(gstin).finally(() => {
+                        activePromises--;
+                        processNext();
+                    });
+                }
+            }
+            processNext();
+        });
 
         finishSearch();
     });
@@ -138,7 +209,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const fRtn = filterRtnType.value;
         const fMnth = filterMonth.value;
 
-        // Apply filters
         let records = allRecords;
         if (fRtn !== 'ALL') records = records.filter(r => r.rtntype === fRtn);
         if (!isPivot && fMnth !== 'ALL') records = records.filter(r => r.month === fMnth);
@@ -149,11 +219,8 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        if (isPivot) {
-            renderPivotedTable(records);
-        } else {
-            renderListTable(records);
-        }
+        if (isPivot) renderPivotedTable(records);
+        else renderListTable(records);
     }
 
     function renderListTable(records) {
@@ -189,31 +256,23 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function renderPivotedTable(records) {
-        // Group by GSTIN + ReturnType
         const grouped = {};
         const availableMonths = new Set();
         
         records.forEach(r => {
-            if (r.month === '-' || r.rtntype === '-') return; // Skip errors/empty rows from pivot optionally, or include them? We'll skip invalid months.
+            if (r.month === '-' || r.rtntype === '-') return; 
             availableMonths.add(r.month);
             const key = `${r.gstin}___${r.rtntype}`;
-            if (!grouped[key]) {
-                grouped[key] = { gstin: r.gstin, rtntype: r.rtntype, months: {} };
-            }
-            // Store date of filing in month
+            if (!grouped[key]) grouped[key] = { gstin: r.gstin, rtntype: r.rtntype, months: {} };
             grouped[key].months[r.month] = r.dof;
         });
 
-        // Sort columns by standard FY
         const cols = [...availableMonths].sort((a,b) => monthRank(a) - monthRank(b));
-
-        // Create Header
         let theadHtml = `<tr><th>GSTIN</th><th>Return Type</th>`;
         cols.forEach(c => theadHtml += `<th>${c}</th>`);
         theadHtml += `</tr>`;
         resultsThead.innerHTML = theadHtml;
 
-        // Create Body
         let bodyHtml = '';
         Object.values(grouped).forEach(g => {
             bodyHtml += `<tr>
@@ -242,7 +301,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const fRtn = filterRtnType.value;
         const fMnth = filterMonth.value;
 
-        // Apply filters
         let records = allRecords;
         if (fRtn !== 'ALL') records = records.filter(r => r.rtntype === fRtn);
         if (!isPivot && fMnth !== 'ALL') records = records.filter(r => r.month === fMnth);
@@ -268,7 +326,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 csvContent += row.join(',') + '\n';
             });
         } else {
-            // Pivot Export
             const grouped = {};
             const availableMonths = new Set();
             records.forEach(r => {

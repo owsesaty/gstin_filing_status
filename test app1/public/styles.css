@@ -158,6 +158,37 @@ form {
     pointer-events: none;
 }
 
+.file-upload-wrapper {
+    background: rgba(15, 23, 42, 0.4);
+    border: 1px dashed var(--border-color);
+    border-radius: 12px;
+    padding: 1rem;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.file-upload-wrapper input[type="file"] {
+    color: var(--text-main);
+    font-family: inherit;
+    font-size: 0.85rem;
+    cursor: pointer;
+}
+
+.file-upload-wrapper input[type="file"]::file-selector-button {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text-main);
+    border: none;
+    padding: 0.4rem 0.8rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    margin-right: 1rem;
+}
+
 .input-group textarea ~ label {
     top: 1.25rem;
 }
