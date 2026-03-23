@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=2.0">
+    <title>GSTIN Details Viewer</title>
+    <!-- Using Google Fonts for modern typography -->
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <!-- Background effect -->
+    <div class="background-blobs">
+        <div class="blob blob-1"></div>
+        <div class="blob blob-2"></div>
+    </div>
+    
+    <main class="container">
+        <header>
+            <h1>GSTIN Search</h1>
+            <p>Enter one or more GSTINs to retrieve combined taxpayer return details</p>
+        </header>
+
+        <form id="search-form">
+            <div class="input-group">
+                <textarea id="gstin-list" rows="3" placeholder="Enter GSTINs (comma separated or one per line)" required></textarea>
+                <label for="gstin-list">GSTIN IDs</label>
+            </div>
+            
+            <div class="input-group">
+                <input type="text" id="fy" value="2025" placeholder="Financial Year (e.g. 2025)" required autocomplete="off">
+                <label for="fy">Financial Year</label>
+            </div>
+
+            <button type="submit" id="submit-btn">
+                <span class="btn-text">Search Details</span>
+                <span class="loader" style="display: none;"></span>
+            </button>
+        </form>
+
+        <section id="results-container" class="hidden">
+            <div class="results-header">
+                <h2>Return Details</h2>
+                <div class="progress-container">
+                    <span id="progress-text">0 / 0 Completed</span>
+                </div>
+            </div>
+
+            <div class="controls-bar">
+                <div class="filters-container">
+                    <div class="filter-group">
+                        <label for="filter-rtntype">Return Type:</label>
+                        <select id="filter-rtntype">
+                            <option value="ALL">All Types</option>
+                        </select>
+                    </div>
+                    <div class="filter-group" id="month-filter-group">
+                        <label for="filter-month">Month:</label>
+                        <select id="filter-month">
+                            <option value="ALL">All Months</option>
+                        </select>
+                    </div>
+                    
+                    <div class="toggle-group">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="view-toggle">
+                            <span class="slider"></span>
+                        </label>
+                        <span class="toggle-label" id="toggle-label-text">List View</span>
+                    </div>
+                </div>
+
+                <button id="export-btn" class="export-btn">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 8px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                    Export to Excel
+                </button>
+            </div>
+            
+            <div class="table-container">
+                <table id="main-table">
+                    <thead id="results-thead">
+                        <!-- Headings added dynamically based on view -->
+                    </thead>
+                    <tbody id="results-tbody">
+                        <!-- Rows will be added here dynamically -->
+                    </tbody>
+                </table>
+            </div>
+        </section>
+        
+        <div id="error-message" class="error-msg hidden"></div>
+    </main>
+
+    <script src="script.js"></script>
+</body>
+</html>
