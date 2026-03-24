@@ -20,10 +20,19 @@ document.addEventListener('DOMContentLoaded', () => {
     const excelUpload = document.getElementById('excel-upload');
     const gstinTextarea = document.getElementById('gstin-list');
 
+    // Pagination elements
+    const paginationControls = document.getElementById('pagination-controls');
+    const prevPageBtn = document.getElementById('prev-page');
+    const nextPageBtn = document.getElementById('next-page');
+    const pageInfo = document.getElementById('page-info');
+
     // Global store
     let allRecords = [];
     let seenReturnTypes = new Set();
     let seenMonths = new Set();
+
+    let currentPage = 1;
+    const ROWS_PER_PAGE = 200;
 
     // Standard Indian Financial Year Months
     const FY_MONTHS = ['April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December', 'January', 'February', 'March'];
@@ -88,91 +97,96 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        const MAX_GSTINS = 1000;
+        let finalGstins = gstins;
+
+        if (finalGstins.length > MAX_GSTINS) {
+            alert(`For system stability, the bulk processor is limited to ${MAX_GSTINS} GSTINs at a time. The list will be automatically truncated. Please split larger datasets into multiple smaller files.`);
+            finalGstins = finalGstins.slice(0, MAX_GSTINS);
+            gstinTextarea.value = finalGstins.join('\n'); // update textarea to reflect what's actually being processed
+        }
+
         allRecords = [];
         seenReturnTypes.clear();
         seenMonths.clear();
         updateFilterDropdowns();
-        renderTable();
+        
+        resultsTbody.innerHTML = '<tr><td colspan="6" class="empty-state">Sending bulk payload to server... Please wait. (This may take a minute)</td></tr>';
         resultsContainer.classList.remove('hidden');
-        startSearch(gstins.length);
+        paginationControls.classList.add('hidden');
+        startSearch(finalGstins.length);
 
-        let completed = 0;
-        const CONCURRENCY_LIMIT = 10; // Multithreaded-like worker pool limit
+        try {
+            const chunkSize = 50; // Process 50 GSTINs per bulk request
+            let totalProcessed = 0;
 
-        // Worker function
-        const processGstin = async (gstin) => {
-            try {
-                const response = await fetch('/api/search', {
+            for (let i = 0; i < finalGstins.length; i += chunkSize) {
+                const chunk = finalGstins.slice(i, i + chunkSize);
+
+                const response = await fetch('/api/search_bulk', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ gstin, fy })
+                    body: JSON.stringify({ gstins: chunk, fy: fy })
                 });
 
                 const data = await response.json();
-                if (!response.ok) throw new Error(data.error || `Error ${response.status}`);
-
-                if (data && data.filingStatus && Array.isArray(data.filingStatus) && data.filingStatus.length > 0 && Array.isArray(data.filingStatus[0])) {
-                    data.filingStatus[0].forEach(r => {
-                        const isNotFiled = r.status && r.status.toLowerCase().includes('not filed');
-                        allRecords.push({
-                            gstin: gstin,
-                            fy: r.fy || fy,
-                            month: r.taxp || 'Unknown',
-                            rtntype: r.rtntype || 'Unknown',
-                            dof: isNotFiled ? '-' : (r.dof || '-'),
-                            status: r.status || 'Unknown',
-                            mof: r.mof || '-',
-                            arn: r.arn || '-'
-                        });
-                        if (r.rtntype) seenReturnTypes.add(r.rtntype);
-                        if (r.taxp && r.taxp !== 'Unknown') seenMonths.add(r.taxp);
-                    });
+                if (!response.ok) throw new Error(data.error || `Bulk Error ${response.status}`);
+                
+                if (data.results) {
+                    for (const gstin of Object.keys(data.results)) {
+                        const rData = data.results[gstin];
+                        
+                        if (rData.error) {
+                            allRecords.push({
+                                gstin: gstin, fy: fy, month: '-', rtntype: '-', dof: '-', status: `Error: ${rData.error}`, mof: '-', arn: '-'
+                            });
+                            continue;
+                        }
+                        
+                        if (rData.filingStatus && Array.isArray(rData.filingStatus) && rData.filingStatus.length > 0 && Array.isArray(rData.filingStatus[0])) {
+                            rData.filingStatus[0].forEach(r => {
+                                const isNotFiled = r.status && r.status.toLowerCase().includes('not filed');
+                                allRecords.push({
+                                    gstin: gstin,
+                                    fy: r.fy || fy,
+                                    month: r.taxp || 'Unknown',
+                                    rtntype: r.rtntype || 'Unknown',
+                                    dof: isNotFiled ? '-' : (r.dof || '-'),
+                                    status: r.status || 'Unknown',
+                                    mof: r.mof || '-',
+                                    arn: r.arn || '-'
+                                });
+                                if (r.rtntype) seenReturnTypes.add(r.rtntype);
+                                if (r.taxp && r.taxp !== 'Unknown') seenMonths.add(r.taxp);
+                            });
+                        } else {
+                            allRecords.push({
+                                gstin: gstin, fy: fy, month: '-', rtntype: '-', dof: '-', status: rData.status || 'No Records Found', mof: '-', arn: '-'
+                            });
+                        }
+                    }
                 } else {
-                    allRecords.push({
-                        gstin: gstin, fy: fy, month: '-', rtntype: '-', dof: '-', status: 'No Records Found', mof: '-', arn: '-'
-                    });
+                     showError("Received malformed bulk response from server.");
                 }
-            } catch (err) {
-                allRecords.push({
-                    gstin: gstin, fy: fy, month: '-', rtntype: '-', dof: '-', status: `Error: ${err.message}`, mof: '-', arn: '-'
-                });
-            } finally {
-                completed++;
-                progressText.textContent = `${completed} / ${gstins.length} Completed`;
-                updateFilterDropdowns();
-                renderTable();
-            }
-        };
 
-        // Async Concurrency Pool Execution
-        let activePromises = 0;
-        let index = 0;
-
-        await new Promise((resolve) => {
-            function processNext() {
-                if (index >= gstins.length && activePromises === 0) {
-                    resolve();
-                    return;
-                }
-                while (activePromises < CONCURRENCY_LIMIT && index < gstins.length) {
-                    const gstin = gstins[index++];
-                    activePromises++;
-                    processGstin(gstin).finally(() => {
-                        activePromises--;
-                        processNext();
-                    });
-                }
+                totalProcessed += chunk.length;
+                progressText.textContent = `${totalProcessed} / ${finalGstins.length} Completed`;
             }
-            processNext();
-        });
+        } catch (err) {
+            showError("Failed to fetch bulk data: " + err.message);
+        }
 
         finishSearch();
+        updateFilterDropdowns();
+        currentPage = 1;
+        renderTable();
     });
 
-    filterRtnType.addEventListener('change', renderTable);
-    filterMonth.addEventListener('change', renderTable);
+    filterRtnType.addEventListener('change', () => { currentPage = 1; renderTable(); });
+    filterMonth.addEventListener('change', () => { currentPage = 1; renderTable(); });
     
     viewToggle.addEventListener('change', () => {
+        currentPage = 1;
         const isPivot = viewToggle.checked;
         toggleLabelText.textContent = isPivot ? 'Pivot View' : 'List View';
         monthFilterGroup.style.display = isPivot ? 'none' : 'flex';
@@ -181,6 +195,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
     exportBtn.addEventListener('click', () => {
         exportToCsv();
+    });
+
+    prevPageBtn.addEventListener('click', () => {
+        if (currentPage > 1) {
+            currentPage--;
+            renderTable();
+        }
+    });
+
+    nextPageBtn.addEventListener('click', () => {
+        currentPage++;
+        renderTable();
     });
 
     function updateFilterDropdowns() {
@@ -216,6 +242,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (records.length === 0) {
             resultsThead.innerHTML = `<tr><th>Results</th></tr>`;
             resultsTbody.innerHTML = '<tr><td class="empty-state">No records to display.</td></tr>';
+            paginationControls.classList.add('hidden');
             return;
         }
 
@@ -224,6 +251,14 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function renderListTable(records) {
+        // Handle pagination
+        const totalPages = Math.ceil(records.length / ROWS_PER_PAGE);
+        if (currentPage > totalPages) currentPage = totalPages;
+        
+        const startIndex = (currentPage - 1) * ROWS_PER_PAGE;
+        const endIndex = startIndex + ROWS_PER_PAGE;
+        const pagedRecords = records.slice(startIndex, endIndex);
+
         resultsThead.innerHTML = `
             <tr>
                 <th>GSTIN</th>
@@ -235,7 +270,7 @@ document.addEventListener('DOMContentLoaded', () => {
             </tr>
         `;
         let html = '';
-        records.forEach(item => {
+        pagedRecords.forEach(item => {
             let badgeClass = 'status-success';
             const sL = item.status.toLowerCase();
             if (sL.includes('pending') || sL.includes('not')) badgeClass = 'status-pending';
@@ -253,6 +288,8 @@ document.addEventListener('DOMContentLoaded', () => {
             `;
         });
         resultsTbody.innerHTML = html;
+
+        updatePaginationUI(totalPages);
     }
 
     function renderPivotedTable(records) {
@@ -267,6 +304,16 @@ document.addEventListener('DOMContentLoaded', () => {
             grouped[key].months[r.month] = r.dof;
         });
 
+        const pivotedArray = Object.values(grouped);
+        
+        // Handle pagination
+        const totalPages = Math.ceil(pivotedArray.length / ROWS_PER_PAGE);
+        if (currentPage > totalPages && totalPages > 0) currentPage = totalPages;
+        
+        const startIndex = (currentPage - 1) * ROWS_PER_PAGE;
+        const endIndex = startIndex + ROWS_PER_PAGE;
+        const pagedRecords = pivotedArray.slice(startIndex, endIndex);
+
         const cols = [...availableMonths].sort((a,b) => monthRank(a) - monthRank(b));
         let theadHtml = `<tr><th>GSTIN</th><th>Return Type</th>`;
         cols.forEach(c => theadHtml += `<th>${c}</th>`);
@@ -274,7 +321,7 @@ document.addEventListener('DOMContentLoaded', () => {
         resultsThead.innerHTML = theadHtml;
 
         let bodyHtml = '';
-        Object.values(grouped).forEach(g => {
+        pagedRecords.forEach(g => {
             bodyHtml += `<tr>
                 <td style="font-family: monospace;">${g.gstin}</td>
                 <td><strong>${g.rtntype}</strong></td>`;
@@ -289,11 +336,25 @@ document.addEventListener('DOMContentLoaded', () => {
             bodyHtml += `</tr>`;
         });
 
-        if (Object.keys(grouped).length === 0) {
+        if (pivotedArray.length === 0) {
             resultsTbody.innerHTML = `<tr><td colspan="${cols.length + 2}" class="empty-state">No valid monthly data to pivot.</td></tr>`;
+            paginationControls.classList.add('hidden');
         } else {
             resultsTbody.innerHTML = bodyHtml;
+            updatePaginationUI(totalPages);
         }
+    }
+
+    function updatePaginationUI(totalPages) {
+        if (totalPages <= 1) {
+            paginationControls.classList.add('hidden');
+            return;
+        }
+        paginationControls.classList.remove('hidden');
+        pageInfo.textContent = `Page ${currentPage} of ${totalPages}`;
+        
+        prevPageBtn.disabled = currentPage === 1;
+        nextPageBtn.disabled = currentPage === totalPages;
     }
 
     function exportToCsv() {

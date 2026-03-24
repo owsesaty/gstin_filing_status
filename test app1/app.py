@@ -25,25 +25,53 @@ def proxy_search():
     if not gstin:
         return jsonify({"error": "GSTIN is required"}), 400
 
+    resp_data, status_code = fetch_gstin_data(gstin, fy)
+    return jsonify(resp_data), status_code
+
+def fetch_gstin_data(gstin, fy):
     url = 'https://services.gst.gov.in/services/api/search/taxpayerReturnDetails'
     payload = {'gstin': gstin, 'fy': fy}
-    
     headers = {
         'Content-Type': 'application/json',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
     }
-    
     try:
-        response = requests.post(url, json=payload, headers=headers)
-        
+        response = requests.post(url, json=payload, headers=headers, timeout=15)
         try:
-            resp_data = response.json()
+            return response.json(), response.status_code
         except ValueError:
-            resp_data = {"error": "Invalid API response format", "response_text": response.text[:300]}
-
-        return jsonify(resp_data), response.status_code
+            return {"error": "Invalid API response format", "response_text": response.text[:300]}, response.status_code
     except requests.exceptions.RequestException as e:
-        return jsonify({'error': str(e)}), 500
+        return {'error': str(e)}, 500
+
+@app.route('/api/search_bulk', methods=['POST'])
+def proxy_search_bulk():
+    import concurrent.futures
+
+    data = request.json
+    gstins = data.get('gstins', [])
+    fy = data.get('fy', '2025')
+    
+    if not gstins or not isinstance(gstins, list):
+        return jsonify({"error": "A list of GSTINs is required"}), 400
+
+    results = {}
+    
+    # Use ThreadPoolExecutor for concurrent requests safely handled by Python backend
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+        future_to_gstin = {executor.submit(fetch_gstin_data, gstin, fy): gstin for gstin in gstins}
+        for future in concurrent.futures.as_completed(future_to_gstin):
+            gstin = future_to_gstin[future]
+            try:
+                resp_data, status_code = future.result()
+                if status_code == 200:
+                    results[gstin] = resp_data
+                else:
+                    results[gstin] = {"error": f"Server responded with {status_code}", "details": resp_data}
+            except Exception as exc:
+                results[gstin] = {"error": str(exc)}
+
+    return jsonify({"results": results}), 200
 
 if __name__ == '__main__':
     print("Starting GSTIN Viewer server...")
